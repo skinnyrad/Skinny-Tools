@@ -1,4 +1,4 @@
-# README: Installing Ubertooth Utilities on Hak5 WiFi Pineapple
+# Installing Ubertooth Utilities on Hak5 WiFi Pineapple
 
 This archive contains the Ubertooth binaries cross-compiled for the `mipsel_24kc` architecture, specifically configured to run on the **Hak5 WiFi Pineapple (Mark VII / Enterprise)** architecture.
 
