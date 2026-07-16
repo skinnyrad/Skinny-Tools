@@ -290,13 +290,19 @@ trap 'rm -rf "$HAK5_STAGE" "$SKINNY_STAGE" 2>/dev/null' EXIT
 
 # Shared helper for payload tree-walking. Used by both Phase 1A (Hak5 fetch)
 # and Phase 4 (Skinny-Tools mirror) so the two phases cannot drift in their
-# iteration logic. Copies each payload subdir from $1 (src) into $2 (dst
-# root) using dir-level no-clobber semantics: if a subdir of the same name
-# already exists at the destination, the entry is skipped entirely (no files
-# are touched). Updates the MERGE_NEW_LABELS, MERGE_PRESENT_LABELS, and
-# MERGE_FAILED_LABELS globals (space-separated "<label>/<name>" strings) and
-# emits "[NEW PAYLOAD] <label>/<name>" to stdout for each newly copied
-# entry. The caller translates the labels into its preferred summary format.
+# iteration logic. For each payload subdir under $1 (src), installs it into
+# $2 (dst root) using two-tier no-clobber semantics:
+#   - If the destination subdir doesn't exist: create it and copy the entire
+#     payload contents (fresh install). Logs "[NEW PAYLOAD] <label>/<name>".
+#   - If the destination subdir already exists: leave it in place but descend
+#     into it and copy any individual FILES that are missing. The Pager ships
+#     empty placeholder folders at /mmc/root/payloads/{alerts,recon/<subtree>,
+#     user/<factory>}/<payload>/ that need to be populated with Hak5's files
+#     on first run; existing files at the destination are preserved so local
+#     user tweaks to e.g. payload.sh survive re-runs. Logs
+#     "[NEW FILE] <label>/<name>/<relpath>" for each file copied.
+# Updates the MERGE_NEW_LABELS, MERGE_PRESENT_LABELS, and MERGE_FAILED_LABELS
+# globals (space-separated "<label>/<name>" strings for whole-payload rows).
 merge_payload_category() {
   src="$1"
   dst_root="$2"
@@ -309,6 +315,13 @@ merge_payload_category() {
     dst="$dst_root/$name"
     if [ -d "$dst" ]; then
       MERGE_PRESENT_LABELS="${MERGE_PRESENT_LABELS}${MERGE_PRESENT_LABELS:+ }$full_label"
+      ( cd "$entry" && find . -type f ) | while IFS= read -r f; do
+        if [ ! -e "$dst/$f" ]; then
+          mkdir -p "$dst/$(dirname "$f")"
+          cp "$entry/$f" "$dst/$f"
+          echo "[NEW FILE] $full_label/$f"
+        fi
+      done
     else
       mkdir -p "$dst"
       if cp -r "$entry/." "$dst/" 2>/dev/null; then
