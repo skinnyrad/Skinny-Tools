@@ -622,7 +622,7 @@ fi
 if [ "$SELECTION" = "S" ] || [ "$SELECTION" = "B" ]; then
   SKINNY_CACHE_ROOT="/mmc/root/.skinny-tools-cache"
   SKINNY_CACHE="$SKINNY_CACHE_ROOT/skinny-tools"
-  SKINNY_TARBALL_URL="https://github.com/skinnyrad/Skinny-Pager-Payloads/archive/refs/heads/master.tar.gz"
+  SKINNY_TARBALL_URL="https://github.com/skinnyrad/Skinny-Pager-Payloads/archive/refs/heads/main.tar.gz"
 
   SKINNY_SRC=""
   SKINNY_STAGE=""
@@ -671,8 +671,30 @@ if [ "$SELECTION" = "S" ] || [ "$SELECTION" = "B" ]; then
       SKINNY_SRC="$SKINNY_CACHE"
     elif [ -d "$LOCAL_PAYLOADS_DIR" ] && [ -d "$CROSS_TOOLS_DIR" ] && \
          [ -f "$REPO_DIR/pagerctl.py" ] && [ -f "$REPO_DIR/libpagerctl.so" ]; then
-      echo "[!] No cache available; falling back to local clone at $REPO_DIR (may be stale)."
-      SKINNY_SRC="$REPO_DIR"
+      # Materialize a clean copy of HEAD from the local clone via `git
+      # archive` rather than pointing at the working tree directly. This
+      # respects the tracked index and skips untracked / .gitignored
+      # files (e.g. dev-only payloads sitting in the working tree) so a
+      # polluted working copy can't poison the Pager's payload set on
+      # a fallback run. Falls back to the raw working tree only when
+      # git is unavailable or the archive fails.
+      if command -v git >/dev/null 2>&1 && [ -d "$REPO_DIR/.git" ]; then
+        echo "[!] No cache available; materializing local clone at $REPO_DIR via 'git archive HEAD' (may be stale)."
+        LOCAL_STAGE="$(mktemp -d -t skinny-local-archive.XXXXXX)"
+        trap 'rm -rf "$HAK5_STAGE" "$SKINNY_STAGE" "$MERGE_TMP" "$LOCAL_STAGE" 2>/dev/null' EXIT
+        if git -C "$REPO_DIR" archive --format=tar HEAD 2>/dev/null | tar -xf - -C "$LOCAL_STAGE" 2>/dev/null && \
+           [ -d "$LOCAL_STAGE/payloads" ] && [ -d "$LOCAL_STAGE/cross-compiled-pager-tools" ] && \
+           [ -f "$LOCAL_STAGE/pagerctl.py" ] && [ -f "$LOCAL_STAGE/libpagerctl.so" ]; then
+          SKINNY_SRC="$LOCAL_STAGE"
+        else
+          echo "[!] 'git archive' failed or produced an incomplete tree; falling back to working tree at $REPO_DIR (untracked files may leak)."
+          rm -rf "$LOCAL_STAGE"
+          SKINNY_SRC="$REPO_DIR"
+        fi
+      else
+        echo "[!] No cache available and no git binary; falling back to working tree at $REPO_DIR (untracked files may leak)."
+        SKINNY_SRC="$REPO_DIR"
+      fi
     else
       echo "[-] Critical Error: no Skinny-Tools source available (no internet, no cache, no local clone)."
       exit 1
