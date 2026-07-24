@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
 # Title: PMF-Checker
 # Author: Skinny R&D
-# Description: Displays PMF/MFP status and security type for a selected Recon AP
+# Description: Displays PMF/MFP status (Required / Optional / Not Indicated) and
+#              security type for a selected Recon AP.
 # Note: PMF is inferred from the AKM suite bits in the libwifi encryption_info
-# bitmask because the recon DB does not store the RSN capability byte.
+# bitmask because the recon DB does not store the RSN capability byte (where
+# the actual MFPC / MFPR bits live per IEEE 802.11-2016 9.4.2.24.2).
 # Bit layout: hak5/libwifi src/libwifi/core/misc/security.h
+#
+# AKM -> PMF relationship used below:
+#   OWE, SAE, SAE-FT  ........ spec mandates MFPC=1, MFPR=1 (PMF Required)
+#   PSK-SHA256/384, 1X-SHA256  default MFPC=1, MFPR=0     (PMF Optional)
+#   PSK + SAE (transition) .... MFPR=0 (PSK clients skip PMF) (PMF Optional)
+#   plain PSK / 1X / FT-PSK ... no SHA-256 suite           (no PMF)
+#
+# KNOWN LIMITATION (TODO if needed):
+# The libwifi on the Pager exposes the AKM suites in ssid.encryption but NOT
+# the raw RSN Capabilities byte, where the actual MFPC / MFPR bits live
+# (IEEE 802.11-2016 9.4.2.24.2). So an AP running plain WPA2-PSK with PMF
+# manually forced to Optional in the admin UI (rare, but legal) will still
+# show "NOT INDICATED" here, because there is no SHA-256 AKM and no
+# SAE / OWE in the bitmask to infer PMF from. If you hit that case, the
+# only fix is a libwifi patch on the Pager side to surface MFPC / MFPR
+# into the recon DB, after which this payload can read them directly
+# instead of inferring from AKMs.
 
 # 1. Ensure an Access Point was selected from the Recon menu
 if [ -z "$_RECON_SELECTED_AP_BSSID" ]; then
@@ -85,10 +104,26 @@ has_all() {
 }
 
 # Decide PMF status from AKM-suite presence
-if has_any "$AKM_OWE" "$AKM_SAE" "$AKM_SAE_FT"; then
+#   * OWE                 -> spec mandates PMF Required
+#   * pure SAE / SAE-FT   -> PMF Required
+#   * SAE + any legacy AKM
+#     (PSK/PSK-FT/PSK-SHA256/1X-SHA256)
+#                          -> WPA2/WPA3 transition mode: PSK clients skip
+#                             PMF, so from the AP's perspective it is
+#                             PMF Optional
+#   * SHA-256/384 AKM only
+#     (no SAE, no OWE)     -> PMF Optional (default MFPC=1, MFPR=0)
+#   * plain PSK / 1X / FT  -> no PMF AKM suite present, cannot infer
+if has_any "$AKM_OWE"; then
     PMF_STATUS="REQUIRED"
+elif has_any "$AKM_SAE" "$AKM_SAE_FT"; then
+    if has_any "$AKM_PSK" "$AKM_PSK_FT" "$AKM_PSK_SHA256" "$AKM_PSK_SHA384" "$AKM_1X_SHA256"; then
+        PMF_STATUS="OPTIONAL"   # WPA2/WPA3 transition mode
+    else
+        PMF_STATUS="REQUIRED"   # pure WPA3
+    fi
 elif has_any "$AKM_PSK_SHA256" "$AKM_PSK_SHA384" "$AKM_1X_SHA256"; then
-    PMF_STATUS="CAPABLE"
+    PMF_STATUS="OPTIONAL"
 else
     PMF_STATUS="NOT INDICATED"
 fi
@@ -138,16 +173,16 @@ LOG "Security: $SEC_TYPE"
 
 case "$PMF_STATUS" in
     REQUIRED)
-        LOG green "PMF/MFP: REQUIRED (Protected)"
+        LOG green  "PMF/MFP: REQUIRED   (Management frames protected, deauth blocked)"
         ;;
-    CAPABLE)
-        LOG green "PMF/MFP: CAPABLE (Protected when negotiated)"
+    OPTIONAL)
+        LOG yellow "PMF/MFP: OPTIONAL   (PMF offered; protection depends on client)"
         ;;
     "NOT INDICATED")
-        LOG yellow "PMF/MFP: NOT INDICATED (likely disabled on consumer APs)"
+        LOG red    "PMF/MFP: NOT INDICATED (no PMF AKM suite, deauth not protected)"
         ;;
     "N/A")
-        LOG yellow "PMF/MFP: N/A (Open Network)"
+        LOG yellow "PMF/MFP: N/A        (Open Network)"
         ;;
     *)
         LOG yellow "PMF/MFP: $PMF_STATUS"
